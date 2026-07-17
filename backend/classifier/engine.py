@@ -77,3 +77,75 @@ def classify_batch(statements: list[dict], rules: dict, min_score: int = 1) -> l
             "classification": filtered_classification
         })
     return classified_statements
+
+
+def merge_user_rules(base_rules: dict, rules_text: str) -> dict:
+    """
+    Parses custom rules from rules_text and merges them into a copy of base_rules.
+    Each non-empty line of rules_text should start with a category name followed by ':' or '='.
+    The remaining text on that line is split by commas to extract keywords or regexes.
+    Keywords are lowercased and added to content['keywords'].
+    If a term starts with 'regex:', the prefix is stripped and it is compiled/added to content['regex'].
+    
+    Example:
+    Functionality: Bluetooth, wifi, shall support OTA
+    Fault Management: regex:\\bshort\\s*circuit\\b
+    """
+    import copy
+    import re
+    
+    merged = copy.deepcopy(base_rules)
+    if not rules_text:
+        return merged
+        
+    category_map = {cat.lower(): cat for cat in merged.keys()}
+    
+    for line in rules_text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+            
+        # Support both ':' and '=' as delimiters
+        delimiter = None
+        if ":" in line:
+            delimiter = ":"
+        elif "=" in line:
+            delimiter = "="
+            
+        if not delimiter:
+            continue
+            
+        parts = line.split(delimiter, 1)
+        cat_name_raw = parts[0].strip().lower()
+        if cat_name_raw not in category_map:
+            continue
+            
+        cat_key = category_map[cat_name_raw]
+        rules_part = parts[1].strip()
+        if not rules_part:
+            continue
+            
+        terms = [t.strip() for t in rules_part.split(",")]
+        for term in terms:
+            if not term:
+                continue
+            if term.lower().startswith("regex:"):
+                pattern = term[6:].strip()
+                if pattern:
+                    try:
+                        re.compile(pattern)
+                        if pattern not in merged[cat_key]["regex"]:
+                            merged[cat_key]["regex"].append(pattern)
+                    except re.error as e:
+                        print(f"Skipping invalid user regex: {pattern}. Error: {e}")
+            else:
+                kw = term.lower()
+                if kw not in merged[cat_key]["keywords"]:
+                    merged[cat_key]["keywords"].append(kw)
+                    
+    return merged
+
+
+# Alias classify_statements to classify_batch for backward compatibility/pipeline conventions
+classify_statements = classify_batch
+

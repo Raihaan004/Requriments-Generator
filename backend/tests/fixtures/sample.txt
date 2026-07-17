@@ -1,0 +1,4 @@
+This is a sample requirements text file.
+REQ-001: The system shall run offline.
+REQ-002: Latency must be low.
+REQ-003: In the event of thermal runaway, the system shall isolate the battery module.
