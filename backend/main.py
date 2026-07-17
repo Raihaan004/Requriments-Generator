@@ -12,6 +12,8 @@ from classifier import splitter
 import rules
 import classifier
 from utils import save_upload_file, get_file_type, TEMP_DIR
+from fastapi.responses import FileResponse
+from export.excel_export import export_to_excel
 
 # Set up simple logging
 logging.basicConfig(level=logging.INFO)
@@ -328,4 +330,40 @@ def preview_classification(session_id: str):
         )
         
     return session["classified_rows"]
+
+
+@app.post("/export/{session_id}", response_class=FileResponse)
+def export_session_excel(session_id: str):
+    if session_id not in SESSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found"
+        )
+        
+    session = SESSIONS[session_id]
+    classified_rows = session.get("classified_rows")
+    if classified_rows is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Run /classify first before exporting"
+        )
+        
+    output_filename = f"{session_id}_export.xlsx"
+    output_path = os.path.join(TEMP_DIR, output_filename)
+    
+    try:
+        export_to_excel(classified_rows, output_path)
+    except Exception as e:
+        logger.error(f"Failed to generate Excel export: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate Excel file: {str(e)}"
+        )
+        
+    return FileResponse(
+        path=output_path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename="requirements_analysis.xlsx"
+    )
+
 
