@@ -108,3 +108,11 @@ export async function classify(
   });
   return response.data;
 }
+
+export async function exportExcel(sessionId: string): Promise<Blob> {
+  const response = await api.post(`/export/${sessionId}`, null, {
+    responseType: 'blob',
+  });
+  return response.data;
+}
+

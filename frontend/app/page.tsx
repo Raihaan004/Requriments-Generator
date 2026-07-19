@@ -7,7 +7,38 @@ import {
   uploadPlatform,
   uploadRegulatory,
   classify,
+  exportExcel,
 } from '@/lib/api';
+import { SOURCE_LABEL_MAP } from '@/lib/constants';
+
+function flattenRows(rows: any[]): any[] {
+  const flatRows: any[] = [];
+  if (!rows) return flatRows;
+  rows.forEach((r: any) => {
+    if (r.classification && typeof r.classification === 'object' && Object.keys(r.classification).length > 0) {
+      Object.entries(r.classification).forEach(([category, details]: [string, any]) => {
+        flatRows.push({
+          category,
+          text: r.text || '',
+          source_doc: r.source_doc || '',
+          line_number: r.line_number || 0,
+          matched_rules: details.matched || [],
+          score: details.score || 0,
+        });
+      });
+    } else if (r.category) {
+      flatRows.push({
+        category: r.category,
+        text: r.text || r.statement || '',
+        source_doc: r.source_doc || '',
+        line_number: r.line_number || 0,
+        matched_rules: r.matched_rules || [],
+        score: r.score || 0,
+      });
+    }
+  });
+  return flatRows;
+}
 
 export default function Home() {
   // Session states
@@ -45,6 +76,18 @@ export default function Home() {
   // Classification button states
   const [isClassifying, setIsClassifying] = useState<boolean>(false);
   const [classifyResultSummary, setClassifyResultSummary] = useState<{ rowsCount: number; totalStatements: number } | null>(null);
+
+  // Classification result states (Phase 8)
+  const [classifiedRows, setClassifiedRows] = useState<any[]>([]);
+  const [totalStatements, setTotalStatements] = useState<number>(0);
+  const [hasClassified, setHasClassified] = useState<boolean>(false);
+  const [expandedRowIds, setExpandedRowIds] = useState<Set<string>>(new Set());
+  const [activeTab, setActiveTab] = useState<string>('Functionality');
+
+  // Download states
+  const [isDownloading, setIsDownloading] = useState<boolean>(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [downloadSuccess, setDownloadSuccess] = useState<boolean>(false);
 
   // Errors state
   const [uploadErrors, setUploadErrors] = useState<{
@@ -304,22 +347,78 @@ export default function Home() {
     setUploadErrors((prev) => ({ ...prev, classify: undefined }));
 
     try {
-      console.log(`Running classification with custom instructions length: ${rulesText.length}...`);
       const res = await classify(sessionId, rulesText);
-      console.log('--- CLASSIFICATION RESPONSE ---');
-      console.log(JSON.stringify(res, null, 2));
-      console.log('--------------------------------');
+
+      const flattened = flattenRows(res.rows);
 
       setClassifyResultSummary({
-        rowsCount: res.rows.length,
+        rowsCount: flattened.length,
         totalStatements: res.total_statements,
       });
+
+      setClassifiedRows(flattened);
+      setTotalStatements(res.total_statements);
+      setHasClassified(true);
+      setExpandedRowIds(new Set());
+
+      // Set active tab to the first category that has matches (or default to 'Functionality')
+      const categories = ['Functionality', 'Mechanism', 'Performance', 'Fault Management'];
+      const counts = categories.reduce((acc, cat) => {
+        acc[cat] = flattened.filter((r: any) => r.category === cat).length;
+        return acc;
+      }, {} as Record<string, number>);
+
+      const firstTabWithData = categories.find((cat) => counts[cat] > 0) || 'Functionality';
+      setActiveTab(firstTabWithData);
+
     } catch (err: any) {
       console.error(err);
       const msg = err.response?.data?.detail || err.message || 'Failed to run classification pipeline';
       setUploadErrors((prev) => ({ ...prev, classify: msg }));
     } finally {
       setIsClassifying(false);
+    }
+  };
+
+  const handleDownloadExcel = async () => {
+    if (!sessionId) return;
+    setIsDownloading(true);
+    setDownloadError(null);
+    setDownloadSuccess(false);
+
+    try {
+      const blob = await exportExcel(sessionId);
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'requirements_analysis.xlsx';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+      setDownloadSuccess(true);
+      setTimeout(() => setDownloadSuccess(false), 3000);
+    } catch (err: any) {
+      console.error('Download failed:', err);
+      let errorMsg = 'Export failed — please try again';
+      if (err.response?.data instanceof Blob) {
+        try {
+          const text = await err.response.data.text();
+          const parsed = JSON.parse(text);
+          if (parsed?.detail) {
+            errorMsg = parsed.detail;
+          }
+        } catch (e) {
+          // ignore parsing error, fallback to generic message
+        }
+      } else if (err.response?.data?.detail) {
+        errorMsg = err.response.data.detail;
+      } else if (err.message) {
+        errorMsg = err.message;
+      }
+      setDownloadError(errorMsg);
+    } finally {
+      setIsDownloading(false);
     }
   };
 
@@ -398,14 +497,28 @@ export default function Home() {
       
       console.log(`Running classification with custom instructions...`);
       const res = await classify(sessionId!, "Category: PERFORMANCE matches keywords: latency, respond");
-      console.log('--- CLASSIFICATION RESPONSE ---');
-      console.log(JSON.stringify(res, null, 2));
-      console.log('--------------------------------');
+
+      const flattened = flattenRows(res.rows);
 
       setClassifyResultSummary({
-        rowsCount: res.rows.length,
+        rowsCount: flattened.length,
         totalStatements: res.total_statements,
       });
+
+      setClassifiedRows(flattened);
+      setTotalStatements(res.total_statements);
+      setHasClassified(true);
+      setExpandedRowIds(new Set());
+
+      // Set active tab to the first category that has matches (or default to 'Functionality')
+      const categories = ['Functionality', 'Mechanism', 'Performance', 'Fault Management'];
+      const counts = categories.reduce((acc, cat) => {
+        acc[cat] = flattened.filter((r: any) => r.category === cat).length;
+        return acc;
+      }, {} as Record<string, number>);
+
+      const firstTabWithData = categories.find((cat) => counts[cat] > 0) || 'Functionality';
+      setActiveTab(firstTabWithData);
       setIsClassifying(false);
       
       console.log('=== TEST SUITE COMPLETED SUCCESSFULLY ===');
@@ -912,6 +1025,306 @@ export default function Home() {
 
         </div>
 
+        {/* Results Section (Phase 8) */}
+        {isClassifying && (
+          <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800/80 rounded-2xl p-8 flex flex-col items-center justify-center space-y-4 shadow-2xl animate-pulse">
+            <svg className="animate-spin h-10 w-10 text-teal-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <p className="text-slate-400 text-sm font-medium tracking-wide">Classifying requirement statements...</p>
+          </div>
+        )}
+
+        {hasClassified && !isClassifying && (
+          <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800/80 rounded-2xl p-6 md:p-8 shadow-2xl space-y-6 overflow-hidden transition-all duration-300">
+            {/* Header / Title */}
+            <div className="border-b border-slate-800 pb-4">
+              <h2 className="text-xl font-bold text-slate-100 flex items-center gap-2">
+                <svg className="w-5 h-5 text-teal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+                </svg>
+                Classified Requirements Preview
+              </h2>
+            </div>
+
+            {totalStatements === 0 ? (
+              <div className="p-8 text-center bg-slate-950/40 border border-slate-900 rounded-xl space-y-2">
+                <svg className="w-8 h-8 text-slate-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <p className="text-sm font-semibold text-slate-400">No requirement statements were found in the uploaded documents</p>
+                <p className="text-xs text-slate-600">Please make sure your uploaded files contain non-empty text content.</p>
+              </div>
+            ) : (
+              <>
+                {/* Summary Strip */}
+                {(() => {
+                  const categories = ['Functionality', 'Mechanism', 'Performance', 'Fault Management'] as const;
+                  const counts = categories.reduce((acc, cat) => {
+                    acc[cat] = classifiedRows.filter(r => r.category === cat).length;
+                    return acc;
+                  }, {} as Record<string, number>);
+
+                  return (
+                    <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 p-4 rounded-xl bg-slate-950/60 border border-slate-800">
+                      <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
+                        <div className="space-y-0.5">
+                          <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">Total Statements Parsed</span>
+                          <div className="text-lg font-bold text-slate-200">{totalStatements} statements</div>
+                        </div>
+
+                        <div className="flex flex-col gap-2">
+                          <button
+                            id="download-excel-btn"
+                            type="button"
+                            onClick={handleDownloadExcel}
+                            disabled={!hasClassified || isDownloading || totalStatements === 0}
+                            className={`px-4 py-2 rounded-xl font-semibold text-xs transition duration-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 flex items-center justify-center gap-2 ${
+                              hasClassified && !isDownloading && totalStatements > 0
+                                ? 'bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white shadow-lg shadow-emerald-600/20 active:scale-[0.98]'
+                                : 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/50'
+                            }`}
+                          >
+                            {isDownloading ? (
+                              <>
+                                <svg className="animate-spin h-3.5 w-3.5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
+                                <span>Preparing file...</span>
+                              </>
+                            ) : (
+                              <>
+                                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                </svg>
+                                <span>Download Excel</span>
+                              </>
+                            )}
+                          </button>
+                          {downloadError && (
+                            <p className="text-xs font-medium text-rose-400 bg-rose-950/20 p-2.5 rounded-lg border border-rose-900/30 transition-all duration-200 max-w-xs leading-tight">
+                              {downloadError}
+                            </p>
+                          )}
+                          {downloadSuccess && (
+                            <p className="text-xs font-medium text-emerald-400 bg-emerald-950/20 p-2.5 rounded-lg border border-emerald-900/30 transition-all duration-200 flex items-center gap-1.5 max-w-xs leading-tight">
+                              <svg className="w-3.5 h-3.5 text-emerald-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 13l4 4L19 7" />
+                              </svg>
+                              <span>Downloaded successfully</span>
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      
+                      <div className="flex flex-wrap gap-2 md:gap-3 w-full md:w-auto">
+                        {categories.map((cat) => {
+                          const count = counts[cat];
+                          let borderClass = 'border-slate-800 text-slate-400';
+                          let bgClass = 'bg-slate-900/40';
+                          if (count > 0) {
+                            if (cat === 'Functionality') {
+                              borderClass = 'border-teal-500/20 text-teal-300';
+                              bgClass = 'bg-teal-500/5';
+                            } else if (cat === 'Mechanism') {
+                              borderClass = 'border-sky-500/20 text-sky-300';
+                              bgClass = 'bg-sky-500/5';
+                            } else if (cat === 'Performance') {
+                              borderClass = 'border-amber-500/20 text-amber-300';
+                              bgClass = 'bg-amber-500/5';
+                            } else if (cat === 'Fault Management') {
+                              borderClass = 'border-rose-500/20 text-rose-300';
+                              bgClass = 'bg-rose-500/5';
+                            }
+                          }
+                          return (
+                            <div key={cat} className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-semibold ${bgClass} ${borderClass}`}>
+                              <span>{cat}:</span>
+                              <span className="px-1.5 py-0.5 rounded bg-slate-950 border border-slate-800 text-slate-200">{count}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Tabs */}
+                {(() => {
+                  const categories = ['Functionality', 'Mechanism', 'Performance', 'Fault Management'] as const;
+                  const counts = categories.reduce((acc, cat) => {
+                    acc[cat] = classifiedRows.filter(r => r.category === cat).length;
+                    return acc;
+                  }, {} as Record<string, number>);
+
+                  return (
+                    <div className="space-y-4">
+                      {/* Tab Buttons */}
+                      <div className="flex flex-wrap border-b border-slate-800 gap-1">
+                        {categories.map((cat) => {
+                          const isActive = activeTab === cat;
+                          const count = counts[cat];
+                          
+                          let accentColorClass = 'text-teal-400 border-teal-400';
+                          
+                          if (cat === 'Functionality') {
+                            accentColorClass = 'text-teal-400 border-teal-400 bg-teal-500/5';
+                          } else if (cat === 'Mechanism') {
+                            accentColorClass = 'text-sky-400 border-sky-400 bg-sky-500/5';
+                          } else if (cat === 'Performance') {
+                            accentColorClass = 'text-amber-400 border-amber-400 bg-amber-500/5';
+                          } else if (cat === 'Fault Management') {
+                            accentColorClass = 'text-rose-400 border-rose-400 bg-rose-500/5';
+                          }
+
+                          return (
+                            <button
+                              key={cat}
+                              type="button"
+                              onClick={() => setActiveTab(cat)}
+                              className={`px-4 py-3 text-xs md:text-sm font-semibold border-b-2 transition-all duration-150 flex items-center gap-2 ${
+                                isActive
+                                  ? `${accentColorClass} font-bold`
+                                  : 'border-transparent text-slate-400 hover:text-slate-200 hover:border-slate-700'
+                              }`}
+                            >
+                              <span>{cat}</span>
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+                                isActive 
+                                  ? 'bg-slate-900 border border-slate-800 text-slate-100 font-bold' 
+                                  : 'bg-slate-950 text-slate-500'
+                              }`}>
+                                {count}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {/* Tab Content */}
+                      {(() => {
+                        const filteredAndSortedRows = classifiedRows
+                          .filter(r => r.category === activeTab)
+                          .sort((a, b) => a.line_number - b.line_number);
+
+                        if (filteredAndSortedRows.length === 0) {
+                          return (
+                            <div className="p-12 text-center border border-dashed border-slate-800 rounded-xl bg-slate-950/20 animate-in fade-in duration-200">
+                              <svg className="w-6 h-6 text-slate-600 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                              </svg>
+                              <span className="text-sm text-slate-500 font-semibold block">No statements matched this category</span>
+                              <span className="text-xs text-slate-600">Adjust custom instructions or add more rules to classify statements here.</span>
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <div className="overflow-x-auto border border-slate-800/80 rounded-xl bg-slate-950/20 shadow-inner animate-in fade-in duration-200">
+                            <table className="w-full text-left border-collapse text-xs md:text-sm">
+                              <thead>
+                                <tr className="border-b border-slate-850 bg-slate-900/60 text-slate-400 font-semibold select-none">
+                                  <th className="py-3 px-4 font-semibold w-7/12">Statement</th>
+                                  <th className="py-3 px-4 font-semibold w-2/12">Source</th>
+                                  <th className="py-3 px-4 font-semibold w-2/12">Matched Rules</th>
+                                  <th className="py-3 px-4 font-semibold w-1/12 text-right">Score</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-900/60">
+                                {filteredAndSortedRows.map((row) => {
+                                  const compositeKey = `${row.category}-${row.line_number}-${row.source_doc}`;
+                                  const isExpanded = expandedRowIds.has(compositeKey);
+                                  const sourceLabel = SOURCE_LABEL_MAP[row.source_doc as keyof typeof SOURCE_LABEL_MAP] || row.source_doc;
+                                  
+                                  const toggleExpand = () => {
+                                    setExpandedRowIds(prev => {
+                                      const next = new Set(prev);
+                                      if (next.has(compositeKey)) {
+                                        next.delete(compositeKey);
+                                      } else {
+                                        next.add(compositeKey);
+                                      }
+                                      return next;
+                                    });
+                                  };
+
+                                  return (
+                                    <tr key={compositeKey} className="hover:bg-slate-900/20 transition-colors duration-150">
+                                      {/* Statement */}
+                                      <td className="py-4 px-4 align-top text-slate-200 font-normal leading-relaxed whitespace-pre-wrap">
+                                        <div className="flex flex-col gap-1">
+                                          <span>{row.text}</span>
+                                          <span className="text-[10px] font-mono text-slate-650 select-none">Line {row.line_number}</span>
+                                        </div>
+                                      </td>
+
+                                      {/* Source */}
+                                      <td className="py-4 px-4 align-top text-slate-400 text-xs font-medium">
+                                        <div className="flex items-center gap-1.5 mt-0.5">
+                                          <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 shrink-0" />
+                                          <span className="line-clamp-2">{sourceLabel}</span>
+                                        </div>
+                                      </td>
+
+                                      {/* Matched Rules */}
+                                      <td className="py-4 px-4 align-top">
+                                        <div className="flex flex-col items-start gap-2">
+                                          <button
+                                            type="button"
+                                            onClick={toggleExpand}
+                                            className="px-2.5 py-1 text-[11px] font-semibold rounded-lg bg-slate-900 hover:bg-slate-850 hover:text-slate-200 border border-slate-800 text-slate-300 flex items-center gap-1.5 transition active:scale-[0.98] select-none"
+                                          >
+                                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
+                                            <span>{row.matched_rules?.length || 0} {row.matched_rules?.length === 1 ? 'rule' : 'rules'}</span>
+                                            <svg 
+                                              className={`w-3 h-3 text-slate-500 transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`} 
+                                              fill="none" 
+                                              stroke="currentColor" 
+                                              viewBox="0 0 24 24"
+                                            >
+                                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 9l-7 7-7-7" />
+                                            </svg>
+                                          </button>
+
+                                          {isExpanded && row.matched_rules && row.matched_rules.length > 0 && (
+                                            <div className="flex flex-wrap gap-1 mt-1 max-w-xs animate-in fade-in slide-in-from-top-1 duration-150">
+                                              {row.matched_rules.map((rule: string, rIdx: number) => (
+                                                <span 
+                                                  key={rIdx} 
+                                                  className="px-2 py-0.5 text-[9px] font-semibold rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-mono"
+                                                >
+                                                  {rule}
+                                                </span>
+                                              ))}
+                                            </div>
+                                          )}
+                                        </div>
+                                      </td>
+
+                                      {/* Score */}
+                                      <td className="py-4 px-4 align-top text-right">
+                                        <span className="inline-block px-2 py-0.5 text-xs font-bold rounded bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 font-mono">
+                                          {row.score}
+                                        </span>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  );
+                })()}
+              </>
+            )}
+          </div>
+        )}
+
         {/* Developer Test Tools */}
         <div className="p-5 rounded-xl bg-slate-900/60 border border-slate-800 flex flex-col md:flex-row items-center justify-between gap-4 shadow-xl">
           <div className="space-y-1">
@@ -919,6 +1332,7 @@ export default function Home() {
             <p className="text-xs text-slate-500">Automatically executes the 7-step integration test flow by simulating uploads and triggers.</p>
           </div>
           <button
+            id="run-simulation-btn"
             type="button"
             onClick={runSimulatedTestSuite}
             disabled={!sessionId || isUploading || isClassifying}
